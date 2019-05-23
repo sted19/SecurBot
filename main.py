@@ -1,6 +1,8 @@
 import numpy as np
 import cv2 as cv
 import request_handler
+import base64
+import asyncio
 
 
 face_cascade = cv.CascadeClassifier("./xmls/haarcascade_frontalface_default.xml")
@@ -79,8 +81,8 @@ while(cap.isOpened()):
         cv.imwrite("./images/image_{}.jpg".format(image_number),frame)
 
         # http module sends image to telegram bot
-        res, binary_img = cv.imencode(".jpg",frame)
-        request_handler.send_request("http://127.0.0.1:8081",binary_img,190)
+        encoded, buffer = cv.imencode(".jpg",frame)
+        asyncio.get_event_loop().run_until_complete(request_handler.send_request("ws://127.0.0.1:8082",buffer.tobytes(),190))
 
         image_number += 1
         present = 0
