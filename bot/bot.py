@@ -6,6 +6,7 @@ from telegram.ext import Updater
 from telegram.ext import CommandHandler
 import telegram
 import threading
+import atexit
 
 import os
 import time
@@ -21,6 +22,7 @@ updater = Updater(token=token)
 bot = telegram.Bot(token=token)
 dispatcher = updater.dispatcher
 
+s = None
 active_sockets = {}
 
 class ClientHandler(threading.Thread):
@@ -56,20 +58,24 @@ def run_telegram_bot():
     updater.start_polling()
 
 def run_server():
-    with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1",8083))
-        s.listen()
-        while True:
-            conn, addr = s.accept()
-            print("connected by address: ",addr)
-            client_handler = ClientHandler(conn)
-            client_handler.start()
+    atexit.register(on_exit)
+    global s 
+    s = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+    # handle fast reconnections to the same address setting the value of socket.SO_REUSEADDR to , remove this line after debugging to have a safer connection
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+    s.bind(("127.0.0.1",8083))
+    s.listen()
+    while True:
+        conn, addr = s.accept()
+        print("connected by address: ",addr)
+        client_handler = ClientHandler(conn)
+        client_handler.start()
 
 def run_checker():
     checker = CheckerThread()
     checker.start()
     
-
 def start(bot, update):
     bot.send_message(chat_id=update.message.chat_id, text="Welcome to AtMyDoor bot! Your ID number is {}".format(update.message.chat_id))
 
@@ -152,6 +158,14 @@ def check():
                 active_sockets[key][1] += 5
         lock.release()
         time.sleep(5)
+
+def on_exit():
+    lock.acquire()
+    for key in active_sockets:
+        active_sockets[key][0].close()
+        print("closed: ",key)
+    lock.release()
+    s.close()
 
 if __name__ == "__main__":
     run_telegram_bot()
