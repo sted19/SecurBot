@@ -1,11 +1,43 @@
 import cv2 as cv
-import asyncio
 import os
+import asyncio
+import websockets
+import time
+import socket
+import threading
 
-import message_handler
+
 
 ID_DIR = os.path.join(os.getcwd(),"data")
 ID_PATH = os.path.join(ID_DIR,"id.txt")
+
+id_num = None
+url = "ws://127.0.0.1:8082"
+
+class SenderThread(threading.Thread):
+   def __init__(self, image):
+      threading.Thread.__init__(self)
+      self.image = image
+    
+   def run(self):
+      print ("Thread '" + self.name + "' avviato")
+      websocket_handler(self.image)
+      
+      
+
+# given an image, and id, send everything to the telegram bot at address url
+def websocket_handler(image):
+    with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as s:
+        s.connect(("127.0.0.1",8083))
+        s.sendall(image)
+        answer = s.recv(1024)
+        print(answer)
+        s.sendall(bytes(id_num,"utf-8"))
+        answer = s.recv(1024)
+        if answer == b'':
+            print("answer not provided, socket closed")
+        else:
+            print(answer)
 
 
 def get_id():
@@ -45,7 +77,7 @@ def detect_profile(g_frame,  cascade):
             cv.rectangle(g_frame, (x,y), (x+w,y+h), (0,0,255), 2)
         return 1
 
-def camera_loop(cap,id):
+def camera_loop():
     cap = cv.VideoCapture(0)
     if (not cap.isOpened()):
         print("failed to open videocapture\n")
@@ -87,25 +119,33 @@ def camera_loop(cap,id):
         if (present >= present_limit):
             # websocket sends image to telegram bot
             encoded, buffer = cv.imencode(".jpg",frame)
-            asyncio.get_event_loop().run_until_complete(message_handler.send_message("ws://127.0.0.1:8082",buffer.tobytes(),id))
+
+            print(len(buffer))
+            
+            image_to_send = buffer.tobytes()
+
+            sender = SenderThread(image_to_send)
+            sender.start()
 
             present = 0
-            present_limit += present_limit
+            present_limit = present_limit * 100
             image_number += 1
             
         # show camera frames
         cv.imshow("frame", gray_frame)
 
-        if cv.waitKey(10) & 0xFF == ord("q"):
+        if cv.waitKey(1) & 0xFF == ord("q"):
             break
+        
+        time.sleep(0.009)
+
 
     cap.release()
     cv.destroyAllWindows()
 
 if __name__ == "__main__":
-    id = get_id()
-    if (id == None):
+    id_num = get_id()
+    if (id_num == None):
         print("there were some problems getting the ID\n")
         exit(-1)
-
-    camera_loop(id)
+    camera_loop()
