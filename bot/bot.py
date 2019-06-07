@@ -1,6 +1,7 @@
 import socket
 
 from io import BytesIO
+import struct
 
 from telegram.ext import Updater
 from telegram.ext import CommandHandler
@@ -11,7 +12,8 @@ import atexit
 import os
 import time
 
-GRANTED = "GRANTED"
+ACCESS_GRANTED = 17
+ACCESS_DENIED = -17
 
 lock = threading.Lock()
 
@@ -92,7 +94,7 @@ def grant(bot,update):
     lock.acquire()
     for key in active_sockets:
         if str(key) == str(update.message.chat_id):
-            active_sockets[key][0].sendall(GRANTED.encode("utf-8").strip())
+            active_sockets[key][0].sendall(struct.pack("<q",ACCESS_GRANTED))
             found = True
             key_found = key
             break
@@ -115,7 +117,7 @@ def deny(bot,update):
     lock.acquire()
     for key in active_sockets:
         if str(key) == str(update.message.chat_id):
-            active_sockets[key][0].sendall(b'Access denied')
+            active_sockets[key][0].sendall(struct.pack("<q",ACCESS_DENIED))
             found = True
             key_found = key
             break
@@ -135,23 +137,26 @@ def deny(bot,update):
 
 
 def handle(conn):
-    granted = str(conn.recv(1024).decode("utf-8"))
+    granted = receive_bytes(conn,8)
+    print(granted)
+    granted = int(struct.unpack("<q",granted)[0])
     print(granted)
 
-    conn.sendall(b'ack')
+    image_len = receive_bytes(conn,8)
+    image_len = int(struct.unpack("<q",image_len)[0])
+    print(image_len)
 
-    image = conn.recv(98304)
-    print(len(image))
-
-    conn.sendall(b'image received')
+    image = receive_bytes(conn,image_len)
+    print("sent image of size: ",len(image))
     
-    id_num = str(conn.recv(1024).decode("utf-8"))
+    id_num = receive_bytes(conn,8)
+    id_num = int(struct.unpack("<q",id_num)[0])
     print("image and id have been received, this is the id_num: ",id_num)
 
     bio = BytesIO(image)
     bot.sendPhoto(id_num,bio)
 
-    if granted == "1":
+    if granted == 1:
         bot.send_message(chat_id=id_num, text="Access granted through facial recognition, answer /grant to this message to save the picture")
     else:
         bot.send_message(chat_id=id_num, text="This man/woman is at your door! Send \grant to grant access, /deny to deny it! (/grant will also save the picture)")
@@ -164,7 +169,7 @@ def check():
     while True:
         lock.acquire()
         for key in active_sockets:
-            if active_sockets[key][1] >= 50:
+            if active_sockets[key][1] >= 10:
                 try:
                     active_sockets[key][0].close()
                     del active_sockets[key]
@@ -183,6 +188,15 @@ def on_exit():
         print("closed: ",key)
     lock.release()
     s.close()
+
+def receive_bytes(conn, num_bytes):
+    message = b''
+    while len(message) < num_bytes:
+        message += conn.recv(num_bytes - len(message))
+        if message == b'':
+            raise RuntimeError("Socket connection broken")
+    return message
+
 
 if __name__ == "__main__":
     run_telegram_bot()

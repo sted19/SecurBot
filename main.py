@@ -6,6 +6,8 @@ import websockets
 import time
 import socket
 import threading
+import struct
+
 
 
 UTILS = os.path.join(os.getcwd(),"utils")
@@ -21,9 +23,10 @@ IMAGES_PATH = os.path.join(DATA,"images")
 GRANTED_PATH = os.path.join(IMAGES_PATH,"granted")
 threshold = 0.7
 
-ACCESS_GRANTED = 1
+ACCESS_GRANTED = 17
+ACCESS_DENIED = -17
+
 NUM_NEIGHBORS = 6
-GRANTED = "GRANTED"
 
 OPEN_FACE_PATH = os.path.join(UTILS,"opencv-face-recognition")
 EMBEDDER_PATH = os.path.join(OPEN_FACE_PATH,"openface_nn4.small2.v1.t7")
@@ -80,7 +83,7 @@ def nearest_neighbors(image_to_check):
         image_numbers = result[1][0]
         if distances[0] < threshold:
             print("Access granted through facial recognition")
-            return ACCESS_GRANTED
+            return 1
         return 0
     
     return 0
@@ -92,28 +95,32 @@ def websocket_handler(granted,image,image_to_save):
     with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as s:
         s.connect(("127.0.0.1",8083))
 
-        s.sendall((str(granted)).encode("utf-8").strip())
-        
-        ack = s.recv(1024)
-        print(ack)
+        to_send = struct.pack("<q",granted)
+        s.sendall(to_send)
+
+        image_len = struct.pack("<q",len(image))
+        s.sendall(image_len)
 
         s.sendall(image)
-        
-        answer = s.recv(1024)
-        print(answer)
 
-        s.sendall(id_num.encode("utf-8").strip())
+        id_to_send = struct.pack("<q",int(id_num))
+        s.sendall(id_to_send)
 
         #access already granted, double check to see if it's correct
-        answer = s.recv(1024)
-        if answer == b'':
-            print("answer not provided, socket closed")
-        else:
-            print(answer)
-            if answer == bytes(GRANTED,"utf-8"):
+        try:
+            answer = receive_bytes(s,8)
+            answer = struct.unpack("<q",answer)[0]
+            if answer == ACCESS_GRANTED:
                 next_number = str(int(sorted(os.listdir(GRANTED_PATH))[-1].split(".")[0]) + 1)
                 cv.imwrite(os.path.join(GRANTED_PATH,next_number+".jpg"),image_to_save)
                 print("image saved")
+            elif granted == 0 and answer == ACCESS_DENIED:
+                print("access denied")
+            else:
+                pass
+        except RuntimeError:
+            print("socket closed, no answer")
+            
 
 
 def get_id():
@@ -232,6 +239,14 @@ def camera_loop():
 
     cap.release()
     cv.destroyAllWindows()
+
+def receive_bytes(conn, num_bytes):
+    message = b''
+    while len(message) < num_bytes:
+        message += conn.recv(num_bytes - len(message))
+        if message == b'':
+            raise RuntimeError("Socket connection broken")
+    return message
 
 if __name__ == "__main__":
     id_num = get_id()
