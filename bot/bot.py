@@ -11,6 +11,8 @@ import atexit
 import os
 import time
 
+GRANTED = "GRANTED"
+
 lock = threading.Lock()
 
 TOKEN_PATH = os.path.join(os.getcwd(),"token.txt")
@@ -31,7 +33,7 @@ class ClientHandler(threading.Thread):
       self.conn = conn
     
    def run(self):
-      print ("Thread '" + self.name + "' started")
+      print ("Thread '" + self.name + "' ClientHandler started")
       handle(self.conn)
 
 class CheckerThread(threading.Thread):
@@ -39,7 +41,7 @@ class CheckerThread(threading.Thread):
       threading.Thread.__init__(self)
     
    def run(self):
-      print ("Thread '" + self.name + "' started")
+      print ("Thread '" + self.name + "' checker started")
       check()
 
 def run_telegram_bot():
@@ -61,6 +63,7 @@ def run_server():
     atexit.register(on_exit)
     global s 
     s = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+    
     # handle fast reconnections to the same address setting the value of socket.SO_REUSEADDR to , remove this line after debugging to have a safer connection
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
@@ -78,6 +81,7 @@ def run_checker():
     
 def start(bot, update):
     bot.send_message(chat_id=update.message.chat_id, text="Welcome to AtMyDoor bot! Your ID number is {}".format(update.message.chat_id))
+    bot.send_message(chat_id=update.message.chat_id, text="To start using this bot, insert your ID number in the camera app when requested and launch it!")
 
 def id(bot,update):
     bot.send_message(chat_id=update.message.chat_id, text="your id is {}".format(update.message.chat_id))
@@ -88,13 +92,13 @@ def grant(bot,update):
     lock.acquire()
     for key in active_sockets:
         if str(key) == str(update.message.chat_id):
-            active_sockets[key][0].sendall(b'Access granted')
+            active_sockets[key][0].sendall(GRANTED.encode("utf-8").strip())
             found = True
             key_found = key
             break
     lock.release()
     if found:
-        bot.send_message(chat_id = update.message.chat_id, text="Access granted!")
+        bot.send_message(chat_id = update.message.chat_id, text="Access granted and Image Saved!")
         lock.acquire()
         try:
             active_sockets[key_found][0].close()
@@ -131,13 +135,26 @@ def deny(bot,update):
 
 
 def handle(conn):
+    granted = str(conn.recv(1024).decode("utf-8"))
+    print(granted)
+
+    conn.sendall(b'ack')
+
     image = conn.recv(98304)
+    print(len(image))
+
     conn.sendall(b'image received')
+    
     id_num = str(conn.recv(1024).decode("utf-8"))
     print("image and id have been received, this is the id_num: ",id_num)
 
     bio = BytesIO(image)
     bot.sendPhoto(id_num,bio)
+
+    if granted == "1":
+        bot.send_message(chat_id=id_num, text="Access granted through facial recognition, answer /grant to this message to save the picture")
+    else:
+        bot.send_message(chat_id=id_num, text="This man/woman is at your door! Send \grant to grant access, /deny to deny it! (/grant will also save the picture)")
 
     lock.acquire()
     active_sockets[id_num] = [conn,0]
@@ -147,7 +164,7 @@ def check():
     while True:
         lock.acquire()
         for key in active_sockets:
-            if active_sockets[key][1] >= 10:
+            if active_sockets[key][1] >= 50:
                 try:
                     active_sockets[key][0].close()
                     del active_sockets[key]

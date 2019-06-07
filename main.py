@@ -8,18 +8,31 @@ import socket
 import threading
 
 
+UTILS = os.path.join(os.getcwd(),"utils")
+DATA = os.path.join(os.getcwd(),"data")
 
-ID_DIR = os.path.join(os.getcwd(),"data")
+ID_DIR = os.path.join(DATA,"id")
 ID_PATH = os.path.join(ID_DIR,"id.txt")
 
 id_num = None
 url = "ws://127.0.0.1:8082"
 
-PATH_GRANTED = os.path.join(os.getcwd(),"images/granted")
-threshold = 5000
+IMAGES_PATH = os.path.join(DATA,"images")
+GRANTED_PATH = os.path.join(IMAGES_PATH,"granted")
+threshold = 0.7
 
 ACCESS_GRANTED = 1
-NUM_NEIGHBORS = 4
+NUM_NEIGHBORS = 6
+GRANTED = "GRANTED"
+
+OPEN_FACE_PATH = os.path.join(UTILS,"opencv-face-recognition")
+EMBEDDER_PATH = os.path.join(OPEN_FACE_PATH,"openface_nn4.small2.v1.t7")
+
+HAARCASCADE_PATH = os.path.join(UTILS,"haarcascade_xmls")
+FRONTAL_FACE_XML_PATH = os.path.join(HAARCASCADE_PATH,"haarcascade_frontalface_default.xml")
+PROFILE_FACE_XML_PATH = os.path.join(HAARCASCADE_PATH,"haarcascade_profileface.xml")
+
+embedder = cv.dnn.readNetFromTorch(EMBEDDER_PATH)
 
 class SenderThread(threading.Thread):
    def __init__(self, image_to_send,image_to_save):
@@ -32,81 +45,81 @@ class SenderThread(threading.Thread):
       res = nearest_neighbors(self.image_to_save)
       websocket_handler(res,self.image_to_send,self.image_to_save)
 
-def image_to_feature_vector(image, size=(64,64)):
-    return cv.resize(image,size).flatten()
+def image_to_feature_vector(img):
+    # create 4-dimensional tensor, (1,3,96,96) with every element scaled of a factor of 255, with zeroes subtracted from each RGB value, with no swapping R and B channels nor cropping
+    img_blob = cv.dnn.blobFromImage(img,1.0 / 255,(96, 96), (0, 0, 0), swapRB=True, crop=False)
+    embedder.setInput(img_blob)
+    vec = embedder.forward().flatten()
+    return vec
 
 def nearest_neighbors(image_to_check):
-    to_show = []
-    images = []
-    labels = []
+    feature_vectors = []
 
-    if os.path.isdir(PATH_GRANTED):
-        if len(os.listdir(PATH_GRANTED)) >= NUM_NEIGHBORS:
-            for image_name in os.listdir(PATH_GRANTED):
-                image_path = os.path.join(PATH_GRANTED,image_name)
-                image = cv.imread(image_path)
-                to_show.append(image)
-                print(image.shape)
-                pixels = image_to_feature_vector(image)
-                images.append(pixels)
-                labels.append(1)
-                #print("loaded image numer: {} with name {}".format(num,image_name))
+    if not os.path.isdir(GRANTED_PATH):
+        if not os.path.isdir(IMAGES_PATH):
+            os.makedirs(IMAGES_PATH)
+        os.makedirs(GRANTED_PATH)
 
+    if len(os.listdir(GRANTED_PATH)) >= NUM_NEIGHBORS:
+        dataset_images = sorted(os.listdir(GRANTED_PATH))
+        for image_name in dataset_images:
+            image_path = os.path.join(GRANTED_PATH,image_name)
+            image = cv.imread(image_path)
+            feature_vector = image_to_feature_vector(image)
+            feature_vectors.append(feature_vector)
+            #print("loaded image numer: {} with name {}".format(num,image_name))
+
+
+        neigh = NearestNeighbors(n_neighbors = NUM_NEIGHBORS)
+        neigh.fit(feature_vectors)
+
+        image_to_check = [image_to_feature_vector(image_to_check)]
+        result = neigh.kneighbors(image_to_check)
+        print(result)
+        distances = result[0][0]
+        image_numbers = result[1][0]
+        if distances[0] < threshold:
+            print("Access granted through facial recognition")
+            return ACCESS_GRANTED
+        return 0
     
-            neigh = NearestNeighbors(n_neighbors = NUM_NEIGHBORS)
-            neigh.fit(images)
-
-            image_to_check = [image_to_feature_vector(image_to_check)]
-            result = neigh.kneighbors(image_to_check)
-            print(result)
-            distances = result[0][0]
-            image_numbers = result[1][0]
-            if distances[0] < threshold:
-                print("Access granted through facial recognition")
-                return ACCESS_GRANTED
-            return 0
+    return 0
 
 
 # given an image, and id, send everything to the telegram bot at address url
 def websocket_handler(granted,image,image_to_save):
     # to handle different communication in case of facial recognition (it's the same for now)
-    if granted == ACCESS_GRANTED:
-        with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as s:
-            s.connect(("127.0.0.1",8083))
-            s.sendall(image)
-            answer = s.recv(1024)
+    with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as s:
+        s.connect(("127.0.0.1",8083))
+
+        s.sendall((str(granted)).encode("utf-8").strip())
+        
+        ack = s.recv(1024)
+        print(ack)
+
+        s.sendall(image)
+        
+        answer = s.recv(1024)
+        print(answer)
+
+        s.sendall(id_num.encode("utf-8").strip())
+
+        #access already granted, double check to see if it's correct
+        answer = s.recv(1024)
+        if answer == b'':
+            print("answer not provided, socket closed")
+        else:
             print(answer)
-            s.sendall(bytes(id_num,"utf-8"))
-            #access already granted, double check to see if it's correct
-            answer = s.recv(1024)
-            if answer == b'':
-                print("answer not provided, socket closed")
-            else:
-                print(answer)
-                if answer == b'Access granted':
-                    next_number = str(int(sorted(os.listdir(PATH_GRANTED))[-1].split(".")[0]) + 1)
-                    cv.imwrite(os.path.join(PATH_GRANTED,next_number+".jpg"),image_to_save)
-                    print("image saved")
-    else:
-        with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as s:
-            s.connect(("127.0.0.1",8083))
-            s.sendall(image)
-            answer = s.recv(1024)
-            print(answer)
-            s.sendall(bytes(id_num,"utf-8"))
-            answer = s.recv(1024)
-            if answer == b'':
-                print("answer not provided, socket closed")
-            else:
-                print(answer)
-                if answer == b'Access granted':
-                    next_number = str(int(sorted(os.listdir(PATH_GRANTED))[-1].split(".")[0]) + 1)
-                    cv.imwrite(os.path.join(PATH_GRANTED,next_number+".jpg"),image_to_save)
-                    print("image saved")
+            if answer == bytes(GRANTED,"utf-8"):
+                next_number = str(int(sorted(os.listdir(GRANTED_PATH))[-1].split(".")[0]) + 1)
+                cv.imwrite(os.path.join(GRANTED_PATH,next_number+".jpg"),image_to_save)
+                print("image saved")
 
 
 def get_id():
     id = None
+    if not os.path.isdir(DATA):
+        os.makedirs(DATA)
     if not os.path.isdir(ID_DIR):
         os.makedirs(ID_DIR)
     if os.path.exists(ID_PATH):
@@ -150,8 +163,8 @@ def camera_loop():
         print("failed to open videocapture\n")
         exit(1)
 
-    face_cascade = cv.CascadeClassifier("./xmls/haarcascade_frontalface_default.xml")
-    profile_cascade = cv.CascadeClassifier("./xmls/haarcascade_profileface.xml")
+    face_cascade = cv.CascadeClassifier(FRONTAL_FACE_XML_PATH)
+    profile_cascade = cv.CascadeClassifier(PROFILE_FACE_XML_PATH)
     
     count = 0 
     present = 0
@@ -223,6 +236,7 @@ def camera_loop():
 if __name__ == "__main__":
     id_num = get_id()
     if (id_num == None):
-        print("there were some problems getting the ID\n")
+        print("there were some problems getting the ID number\n")
         exit(-1)
+    
     camera_loop()
