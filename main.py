@@ -21,10 +21,11 @@ url = "ws://127.0.0.1:8082"
 
 IMAGES_PATH = os.path.join(DATA,"images")
 GRANTED_PATH = os.path.join(IMAGES_PATH,"granted")
-threshold = 0.7
+threshold = 0.6
 
 ACCESS_GRANTED = 17
 ACCESS_DENIED = -17
+SAVE_PICTURE = 18
 
 NUM_NEIGHBORS = 6
 
@@ -49,7 +50,7 @@ class SenderThread(threading.Thread):
       websocket_handler(res,self.image_to_send,self.image_to_save)
 
 def image_to_feature_vector(img):
-    # create 4-dimensional tensor, (1,3,96,96) with every element scaled of a factor of 255, with zeroes subtracted from each RGB value, with no swapping R and B channels nor cropping
+    # create 4-dimensional tensor, (1,3,96,96) with every element scaled of a factor of 255, with zeroes subtracted from each RGB value, swapping R and B channels, with no cropping
     img_blob = cv.dnn.blobFromImage(img,1.0 / 255,(96, 96), (0, 0, 0), swapRB=True, crop=False)
     embedder.setInput(img_blob)
     vec = embedder.forward().flatten()
@@ -110,8 +111,11 @@ def websocket_handler(granted,image,image_to_save):
         try:
             answer = receive_bytes(s,8)
             answer = struct.unpack("<q",answer)[0]
-            if answer == ACCESS_GRANTED:
+            if answer == ACCESS_GRANTED or answer == SAVE_PICTURE:
                 next_number = str(int(sorted(os.listdir(GRANTED_PATH))[-1].split(".")[0]) + 1)
+                for i in range(4-len(next_number)):
+                    next_number = "0" + next_number
+                print("next image number is :",next_number)
                 cv.imwrite(os.path.join(GRANTED_PATH,next_number+".jpg"),image_to_save)
                 print("image saved")
             elif granted == 0 and answer == ACCESS_DENIED:
@@ -177,11 +181,11 @@ def camera_loop():
     present = 0
     present_limit = 30
     not_present_limit = 50
-    image_number = 0
-    frame = None
 
     max_area = 0
+    frame = None
     image_to_save = None
+    image_to_send = None
 
     while(cap.isOpened()):
         ret, frame = cap.read()
@@ -207,26 +211,28 @@ def camera_loop():
             if area > max_area:
                 max_area = area
                 image_to_save = crop
+                image_to_send = frame
                 
 
         
         # someone has been in front of the camera for x seconds, save an image of him
         if (present >= present_limit):
             # websocket sends image to telegram bot
-            encoded, buffer = cv.imencode(".jpg",frame)
+            encoded, buffer = cv.imencode(".jpg",image_to_send)
 
-            print(len(buffer))
+            #print(len(buffer))
             
-            image_to_send = buffer.copy().tobytes()
+            bytes_to_send = buffer.copy().tobytes()
 
-
-            sender = SenderThread(image_to_send,image_to_save.copy())
+            sender = SenderThread(bytes_to_send,image_to_save.copy())
             sender.start()
 
             area = 0
+            max_area = 0
+            image_to_send = None
+            image_to_save = None
             present = 0
-            present_limit = present_limit * 100
-            image_number += 1
+            present_limit = present_limit * 10
             
         # show camera frames
         cv.imshow("frame", gray_frame)

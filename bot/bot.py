@@ -12,6 +12,8 @@ import atexit
 import os
 import time
 
+ACCESS_GRANTED_REC = 1
+SAVE_PICTURE = 18
 ACCESS_GRANTED = 17
 ACCESS_DENIED = -17
 
@@ -59,6 +61,9 @@ def run_telegram_bot():
     deny_handler = CommandHandler("deny",deny)
     dispatcher.add_handler(deny_handler)
 
+    save_handler = CommandHandler("save",save)
+    dispatcher.add_handler(save_handler)
+
     updater.start_polling()
 
 def run_server():
@@ -88,59 +93,74 @@ def start(bot, update):
 def id(bot,update):
     bot.send_message(chat_id=update.message.chat_id, text="your id is {}".format(update.message.chat_id))
 
-def grant(bot,update):
+def save(bot,update):
     found = False
-    key_found = None
     lock.acquire()
     for key in active_sockets:
         if str(key) == str(update.message.chat_id):
-            active_sockets[key][0].sendall(struct.pack("<q",ACCESS_GRANTED))
-            found = True
-            key_found = key
-            break
+            if active_sockets[key][2] == ACCESS_GRANTED_REC:
+                #send things to save the picture and than close the socket
+                active_sockets[key][0].sendall(struct.pack("<q",SAVE_PICTURE))
+                found = True
+                active_sockets[key][0].close()
+                del active_sockets[key]
+                break
+            else:
+                break
     lock.release()
     if found:
-        bot.send_message(chat_id = update.message.chat_id, text="Access granted and Image Saved!")
-        lock.acquire()
-        try:
-            active_sockets[key_found][0].close()
-            del active_sockets[key_found]
-        except:
-            print("socket already closed and removed")
-        lock.release()
+        bot.send_message(chat_id = update.message.chat_id, text="Image saved!")
     else:
-        bot.send_message(chat_id = update.message.chat_id, text="You waited too long to answer")
+        bot.send_message(chat_id = update.message.chat_id, text="There's nothing to save anymore!")
+    
+
+def grant(bot,update):
+    found = False
+    lock.acquire()
+    for key in active_sockets:
+        if str(key) == str(update.message.chat_id):
+            # If grant is received afer access has already been granted through facial recognition, do nothing
+            if active_sockets[key][2] == ACCESS_GRANTED_REC:
+                break
+            else:
+                # In this way the access is granted and the image is saved 
+                active_sockets[key][0].sendall(struct.pack("<q",ACCESS_GRANTED))
+                found = True
+                active_sockets[key][0].close()
+                del active_sockets[key]
+                break
+    lock.release()
+    if found:
+        bot.send_message(chat_id = update.message.chat_id, text="Access granted and image saved!")
+    else:
+        bot.send_message(chat_id = update.message.chat_id, text="There's nothing to grant anymore!")
 
 def deny(bot,update):
     found = False
-    key_found = None
     lock.acquire()
     for key in active_sockets:
         if str(key) == str(update.message.chat_id):
-            active_sockets[key][0].sendall(struct.pack("<q",ACCESS_DENIED))
-            found = True
-            key_found = key
-            break
+            if active_sockets[key][2] == ACCESS_GRANTED_REC:
+                break
+            else:
+                active_sockets[key][0].sendall(struct.pack("<q",ACCESS_DENIED))
+                found = True
+                active_sockets[key][0].close()
+                del active_sockets[key]
+                break
     lock.release()
     if found:
         bot.send_message(chat_id = update.message.chat_id, text="Access denied!")
-        lock.acquire()
-        try:
-            active_sockets[key_found][0].close()
-            del active_sockets[key_found]
-        except:
-            print("socket already closed and removed")
-        lock.release()
     else:
-        bot.send_message(chat_id = update.message.chat_id, text="You waited too long to answer")
+        bot.send_message(chat_id = update.message.chat_id, text="There's nothing to deny anymore!")
     
 
 
 def handle(conn):
     granted = receive_bytes(conn,8)
-    print(granted)
     granted = int(struct.unpack("<q",granted)[0])
-    print(granted)
+    if granted:
+        print("access already granted through facial recognition")
 
     image_len = receive_bytes(conn,8)
     image_len = int(struct.unpack("<q",image_len)[0])
@@ -157,19 +177,19 @@ def handle(conn):
     bot.sendPhoto(id_num,bio)
 
     if granted == 1:
-        bot.send_message(chat_id=id_num, text="Access granted through facial recognition, answer /grant to this message to save the picture")
+        bot.send_message(chat_id=id_num, text="Access granted through facial recognition, answer '/save' to save the picture")
     else:
-        bot.send_message(chat_id=id_num, text="This man/woman is at your door! Send \grant to grant access, /deny to deny it! (/grant will also save the picture)")
+        bot.send_message(chat_id=id_num, text="This person is at your door! Send \grant to grant access, /deny to deny it!")
 
     lock.acquire()
-    active_sockets[id_num] = [conn,0]
+    active_sockets[id_num] = [conn,0,ACCESS_GRANTED_REC]
     lock.release()
 
 def check():
     while True:
         lock.acquire()
         for key in active_sockets:
-            if active_sockets[key][1] >= 10:
+            if active_sockets[key][1] >= 50:
                 try:
                     active_sockets[key][0].close()
                     del active_sockets[key]
